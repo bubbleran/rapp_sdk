@@ -1,0 +1,48 @@
+loaders:
+  - type: python
+    search_path: ["../src"]
+    packages:
+      - br_rapp_sdk.a1_services
+      - br_rapp_sdk.monitoring_services
+      - br_rapp_sdk.oam_services
+      - br_rapp_sdk.agents
+
+processors:
+  - type: filter
+  - type: smart
+  - type: crossref
+
+renderer:
+  type: mkdocs
+  pages:
+    - title: Home
+      name: index
+      source: README.md
+
+    - title: API Reference
+      children:
+        - title: A1 Services
+          contents:
+            - br_rapp_sdk.a1_services.a1_policy_types.*
+            - br_rapp_sdk.a1_services.a1_services.*
+        - title: Monitoring Services
+          contents:
+            - br_rapp_sdk.monitoring_services.monitoring_types.*
+            - br_rapp_sdk.monitoring_services.monitoring_services.*
+        - title: OAM Services
+          contents:
+            - br_rapp_sdk.oam_services.network_types.*
+            - br_rapp_sdk.oam_services.network.*
+            - br_rapp_sdk.oam_services.terminal_types.*
+            - br_rapp_sdk.oam_services.terminal.*
+        - title: Agents
+          contents:
+            - br_rapp_sdk.agents.chat_model_config.*
+            - br_rapp_sdk.agents.chat_model_client.*
+            - br_rapp_sdk.agents.tools.*
+            - br_rapp_sdk.agents.agent.*
+
+  mkdocs_config:
+    site_name: BR RApp SDK
+    theme: readthedocs
+    repo_url: https://github.com/bubbleran

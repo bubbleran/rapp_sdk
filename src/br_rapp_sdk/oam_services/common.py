@@ -1,0 +1,8 @@
+ATHENA_GROUP = "athena.trirematics.io"
+ATHENA_VERSION = "v1"
+
+ATHENA_NETWORK_KIND = "Network"
+ATHENA_TERMINAL_KIND = "Terminal"
+
+ATHENA_NETWORK_PLURAL = "networks"
+ATHENA_TERMINAL_PLURAL = "terminals"
