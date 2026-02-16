@@ -33,14 +33,16 @@ if __name__ == "__main__":
                 serviceModels=[
                     ServiceModel(
                         name="MAC",
-                        periodicity="10_ms",
+                        periodicity="10",
                     ),
                     ServiceModel(
                         name="PDCP",
-                        periodicity="100_ms",
+                        periodicity="100",
                     )
                 ],
-                database="SQL" 
+                database=DatabaseType(
+                    sqlDatabase=SqlDatabase(dbName="test_db")
+                )
             )
         )
 )

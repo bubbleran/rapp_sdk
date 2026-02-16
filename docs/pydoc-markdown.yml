@@ -5,7 +5,6 @@ loaders:
       - br_rapp_sdk.a1_services
       - br_rapp_sdk.monitoring_services
       - br_rapp_sdk.oam_services
-      - br_rapp_sdk.agents
 
 processors:
   - type: filter
@@ -35,12 +34,6 @@ renderer:
             - br_rapp_sdk.oam_services.network.*
             - br_rapp_sdk.oam_services.terminal_types.*
             - br_rapp_sdk.oam_services.terminal.*
-        - title: Agents
-          contents:
-            - br_rapp_sdk.agents.chat_model_config.*
-            - br_rapp_sdk.agents.chat_model_client.*
-            - br_rapp_sdk.agents.tools.*
-            - br_rapp_sdk.agents.agent.*
 
   mkdocs_config:
     site_name: BR RApp SDK
