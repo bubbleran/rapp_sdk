@@ -1,3 +1,7 @@
+"""
+Refer to the API reference in the Developer Guide of BubbleRAN Open Documentation
+for detailed information about these types.
+"""
 from typing import Optional, List, Dict, Any, Literal
 from pydantic import Field, IPvAnyAddress, field_validator
 from .network_types import (

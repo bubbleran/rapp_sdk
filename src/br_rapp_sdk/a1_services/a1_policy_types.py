@@ -536,17 +536,19 @@ class PolicyObject(SnakeModel):
 
 
 # === API Types ===
+class AuthenticationInfo(SnakeModel):
+    user: Optional[str] = None
+    password: Optional[str] = None
 
 class Endpoint(SnakeModel):
-    api_path: str = Field(..., alias="apiPath")
-    element_name: str = Field(..., alias="elementName")
-    host: str
-    ip: IPvAnyAddress
-    method: Literal["GET", "POST", "PUT", "DELETE", "PATCH"]
-    port: int
-    scheme: Literal["http", "https"]
-    service: str
-
+    scheme: Optional[str] = None
+    ip: Optional[IPvAnyAddress] = None
+    host: Optional[str] = None
+    service: Optional[str] = None
+    api_path: Optional[str] = Field(None, alias="apiPath")
+    port: Optional[int] = None
+    auth: Optional[AuthenticationInfo] = None
+    
     #TODO: It is better to use host instead of ip in the full_url
     @property
     def full_url(self) -> HttpUrl:
@@ -567,14 +569,13 @@ class PolicyFeedbackDestination(Endpoint):
 
     Attributes:
         api_path (str): The API path for the feedback endpoint.
-        element_name (str): The name of the element for the feedback endpoint.
         host (str): The host for the feedback endpoint.
         ip (IPvAnyAddress): The IP address for the feedback endpoint.
-        method (Literal["GET", "POST", "PUT", "DELETE", "PATCH"]): The HTTP method for the feedback endpoint.
         port (int): The port for the feedback endpoint.
-        scheme (Literal["http", "https"]): The scheme for the feedback endpoint.
+        scheme (str): The scheme for the feedback endpoint. E.g., "http" or "SQL"
         service (str): The service name for the feedback endpoint.
     """
+
     pass
 
 class PolicyTypeInformation(SnakeModel):
