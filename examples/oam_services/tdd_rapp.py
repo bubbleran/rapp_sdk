@@ -20,7 +20,7 @@ if __name__ == "__main__":
 
     # Change the TDD configuration
     new_tdd_config = TDDConfig(
-        period="5ms",
+        period=5000,
         dl_slots=6,
         dl_symbols=6,
         ul_slots=3,

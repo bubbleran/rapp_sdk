@@ -6,7 +6,7 @@ from kubernetes.client.exceptions import ApiException
 from kubernetes import client, config
 from pydantic import BaseModel, model_validator
 from shutil import get_terminal_size
-from typing import Dict, Literal, Optional, Self
+from typing import Dict, List, Literal, Optional, Self
 
 class KubectlError(BaseModel):
     """A Pydantic model to represent an error that occurred during a kubectl operation.
@@ -30,7 +30,7 @@ class KubectlOperationResult(BaseModel):
         error (KubectlError | None): An error object if the operation failed, otherwise None.
     """
     status: Literal['success', 'error']
-    operation: Literal['apply', 'create', 'update', 'delete', 'get', 'list']
+    operation: Literal['apply', 'create', 'update', 'delete', 'get', 'list', 'exec']
     data: Dict = {}
     error: KubectlError | None = None
 
@@ -393,6 +393,84 @@ def create_logger(
     logger.addHandler(handler)
     logger.propagate = False
     return logger
+
+def exec_in_deployment(
+    namespace: str,
+    deployment_name: str,
+    command: List[str],
+    container: str = "toolbox",
+    timeout: int = 60,
+) -> KubectlOperationResult:
+    """Execute a command in a running pod that belongs to a Kubernetes Deployment.
+
+    Parameters:
+        namespace (str): The namespace of the deployment.
+        deployment_name (str): The name of the deployment.
+        command (List[str]): The command and arguments to execute.
+        container (str): The container name within the pod (default: "toolbox").
+        timeout (int): Seconds to wait for the command to complete (default: 60).
+
+    Returns:
+        KubectlOperationResult: Result with ``data['output']`` (stdout+stderr) or an error result.
+    """
+    from kubernetes.stream import stream as kube_stream
+
+    try:
+        apps_api = client.AppsV1Api()
+        core_api = client.CoreV1Api()
+
+        deployment = apps_api.read_namespaced_deployment(
+            name=deployment_name, namespace=namespace
+        )
+        match_labels = deployment.spec.selector.match_labels
+        label_selector = ",".join(f"{k}={v}" for k, v in match_labels.items())
+
+        pods = core_api.list_namespaced_pod(
+            namespace=namespace, label_selector=label_selector
+        )
+        running = [p for p in pods.items if p.status.phase == "Running"]
+        if not running:
+            return KubectlOperationResult(
+                status='error',
+                operation='exec',
+                error=KubectlError(
+                    code=404,
+                    message=f"No running pods for deployment '{deployment_name}' in namespace '{namespace}'.",
+                ),
+            )
+
+        pod_name = running[0].metadata.name
+        output = kube_stream(
+            core_api.connect_get_namespaced_pod_exec,
+            pod_name,
+            namespace,
+            command=command,
+            container=container,
+            stderr=True,
+            stdin=False,
+            stdout=True,
+            tty=False,
+            _request_timeout=timeout,
+        )
+        return KubectlOperationResult(
+            status='success',
+            operation='exec',
+            data={'output': output},
+        )
+    except ApiException as e:
+        try:
+            parsed_details = json.loads(e.body) if e.body else {}
+        except json.JSONDecodeError:
+            parsed_details = {"raw": e.body}
+        return KubectlOperationResult(
+            status='error',
+            operation='exec',
+            error=KubectlError(
+                code=e.status,
+                message=str(e),
+                details=parsed_details,
+            ),
+        )
 
 def load_kubeconfig(
     kubeconfig_path: Optional[str] = None,

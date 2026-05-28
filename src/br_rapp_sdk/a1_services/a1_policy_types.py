@@ -1,3 +1,4 @@
+from enum import IntEnum
 from typing import (
     Any,
     ClassVar,
@@ -39,9 +40,17 @@ DynamicXappId = Annotated[
 class SubscriptionId(SnakeModel):
     id: str
 
+# === Enums ===
+
+class PreferenceType(IntEnum):
+    SHALL = 0
+    PREFER = 1
+    FORCE = 2
+    AVOID = 3
+    FORBID = 4
+
 # === Enum-like Filter ===
 
-# TODO
 class QueryFilter(SnakeModel):
     OWN: ClassVar[str] = "OWN"
     OTHERS: ClassVar[str] = "OTHERS"
@@ -169,13 +178,12 @@ class CId(SnakeModel):
     )
 
     @model_validator(mode="after")
-    def validate_exclusive_fields(cls, values):
-        ec_i, nc_i = values.get("ec_i"), values.get("nc_i")
-        if ec_i is not None and nc_i is not None:
+    def validate_exclusive_fields(self) -> "CId":
+        if self.ec_i is not None and self.nc_i is not None:
             raise ValueError("Only one of 'ec_i' or 'nc_i' may be set.")
-        if ec_i is None and nc_i is None:
+        if self.ec_i is None and self.nc_i is None:
             raise ValueError("One of 'ec_i' or 'nc_i' must be set.")
-        return values
+        return self
 
 
 class CellId(SnakeModel):
@@ -227,13 +235,12 @@ class GroupId(SnakeModel):
     )
 
     @model_validator(mode="after")
-    def only_one_field_must_be_set(cls, values):
-        sp_id, rfsp_index = values.get("sp_id"), values.get("rfsp_index")
-        if sp_id and rfsp_index:
+    def only_one_field_must_be_set(self) -> "GroupId":
+        if self.sp_id and self.rfsp_index:
             raise ValueError("Only one of 'sp_id' or 'rfsp_index' may be set, not both.")
-        if not sp_id and not rfsp_index:
+        if not self.sp_id and not self.rfsp_index:
             raise ValueError("One of 'sp_id' or 'rfsp_index' must be set.")
-        return values
+        return self
 
 
 class ScopeIdentifier(SnakeModel):
@@ -471,24 +478,76 @@ class PolicyObjectives(SnakeModel):
 
 # === Resources and Top Level ===
 
+class TaI(SnakeModel):
+    """Tracking Area Identity (3GPP TS 23.003)."""
+    plmn_id: Optional[PlmnId] = Field(None, alias="plmnId")
+    tac: Optional[str] = Field(
+        None,
+        alias="tac",
+        pattern=r"^[A-Fa-f0-9]{6}$",
+        description="Tracking Area Code, encoded as 6 hexadecimal characters."
+    )
+
+
+class TspResource(SnakeModel):
+    """
+    Represents a single Traffic Steering Preference resource entry.
+
+    Attributes:
+        cell_id_list: List of cells targeted by this preference.
+        preference: Cell usage preference (SHALL/PREFER/FORCE/AVOID/FORBID).
+        primary: If True, the preference applies to the primary cell selection.
+    """
+    cell_id_list: Optional[List[CellId]] = Field(None, alias="cellIdList")
+    preference: Optional[PreferenceType] = Field(None, alias="preference")
+    primary: Optional[bool] = Field(None, alias="primary")
+
+
+class TspResources(SnakeModel):
+    """Traffic Steering Preference resources (list of TspResource entries)."""
+    tsp_resources: Optional[List[TspResource]] = Field(None, alias="tspResources")
+
+
+class SliceSlaResources(SnakeModel):
+    """
+    Resources scoping a Slice SLA policy to specific cells and tracking areas.
+
+    Attributes:
+        cell_id_list: List of CellIds to which the SLA applies.
+        ta_i_list: List of Tracking Area Identities to which the SLA applies.
+    """
+    cell_id_list: Optional[List[CellId]] = Field(None, alias="cellIdList")
+    ta_i_list: Optional[List[TaI]] = Field(None, alias="taIlist")
+
+
+class LbResources(SnakeModel):
+    """
+    Resources for load balancing — designates candidate cells for load transfer.
+
+    Attributes:
+        cell_id_list: List of CellIds that are candidates for load transfer.
+    """
+    cell_id_list: Optional[List[CellId]] = Field(None, alias="cellIdList")
+
+
 class PolicyResources(SnakeModel):
     """
     Represents the policy resources defining various resources based on A1TD spec.
     Attributes:
-        tsp_resources (Optional[dict]): Resources related to Traffic Steering Policies.
-        slice_sla_resources (Optional[dict]): Resources related to Slice Service Level Agreements.
-        lb_resources (Optional[dict]): Resources related to Load Balancing.
+        tsp_resources: Resources related to Traffic Steering Policies.
+        slice_sla_resources: Resources related to Slice Service Level Agreements.
+        lb_resources: Resources related to Load Balancing.
     """
-    tsp_resources: Optional[dict] = Field(
-        None, 
+    tsp_resources: Optional[TspResources] = Field(
+        None,
         alias="tspResources"
     )
-    slice_sla_resources: Optional[dict] = Field(
-        None, 
+    slice_sla_resources: Optional[SliceSlaResources] = Field(
+        None,
         alias="sliceSlaResources"
     )
-    lb_resources: Optional[dict] = Field(
-        None, 
+    lb_resources: Optional[LbResources] = Field(
+        None,
         alias="lbResources"
     )
 

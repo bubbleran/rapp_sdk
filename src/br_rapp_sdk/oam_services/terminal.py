@@ -1,10 +1,14 @@
 from kubernetes import client, config
+import ipaddress
+import re
 from ..common import (
     load_kubeconfig,
     get_cr,
     list_cr,
     apply_cr,
     delete_cr,
+    exec_in_deployment,
+    KubectlError,
     KubectlOperationResult,
 )
 from .common import (
@@ -202,6 +206,208 @@ class OAMTerminalService:
             apply_result.data = { 'terminal_id': terminal_id }
         return apply_result
         
+
+    def test_throughput(
+        self,
+        terminal_id: TermId,
+        direction: Literal["dl", "ul"] = "dl",
+        destination: str = "gateway",
+        args: List[str] = [],
+    ) -> KubectlOperationResult:
+        """Run an iperf throughput test from the terminal.
+
+        Parameters:
+            terminal_id (TermId): The name of the terminal (e.g. ``"ue02"``).
+            direction (Literal["dl", "ul"]): ``"dl"`` adds ``--reverse`` so the server
+                sends toward the UE; ``"ul"`` sends from the UE toward the server.
+            destination (str): Target IP address or ``"gateway"`` to resolve the
+                gateway automatically as the first host of the PDU-session subnet.
+            args (List[str]): Extra iperf flags appended after ``--client <ip>``,
+                e.g. ``["--time", "30", "--interval", "1", "--bandwidth", "10M"]``.
+
+        Returns:
+            KubectlOperationResult: On success, ``data`` contains:
+
+            - ``output`` — raw iperf output string
+
+        Examples:
+        ```python
+        from br_rapp_sdk import OAMServices
+
+        oam = OAMServices()
+        result = oam.terminal.test_throughput("ue02", args=["--time", "10", "--interval", "1"])
+        if result.status == "success":
+            print(result.data["output"])
+        else:
+            print("Error:", result.error)
+        ```
+        """
+        try:
+            t_idx = next(i for i, a in enumerate(args) if a in ("-t", "--time"))
+            exec_timeout = int(args[t_idx + 1]) + 30
+        except (StopIteration, (IndexError, ValueError)):
+            exec_timeout = 90
+
+        get_result = get_cr(
+            kube_api_instance=self._api,
+            group=self._group,
+            version=self._version,
+            plural=self._plural,
+            namespace=self.namespace,
+            name=terminal_id,
+        )
+        if get_result.status != 'success':
+            return get_result
+
+        raw = get_result.data.get('item', {})
+        element = raw.get('status', {}).get('element')
+        if not element:
+            return KubectlOperationResult(
+                status='error', operation='exec',
+                error=KubectlError(code=400, message=f"Terminal '{terminal_id}' has no element assigned. Is it connected?"),
+            )
+
+        interface = raw.get('spec', {}).get('readiness-check', {}).get('interface-name')
+        if not interface:
+            return KubectlOperationResult(
+                status='error', operation='exec',
+                error=KubectlError(code=400, message=f"Terminal '{terminal_id}' has no readiness-check interface-name configured."),
+            )
+
+        ip_result = exec_in_deployment(
+            namespace=self.namespace,
+            deployment_name=element,
+            command=["ip", "address", "show", interface],
+        )
+        if ip_result.status != 'success':
+            return ip_result
+
+        ip_match = re.search(r'inet (\d+\.\d+\.\d+\.\d+/\d+)', ip_result.data.get('output', ''))
+        if not ip_match:
+            return KubectlOperationResult(
+                status='error', operation='exec',
+                error=KubectlError(code=500, message=f"Could not find an IPv4 address on interface '{interface}'."),
+            )
+
+        iface_addr = ipaddress.IPv4Interface(ip_match.group(1))
+        bind_ip = str(iface_addr.ip)
+        dest_ip = str(iface_addr.network.network_address + 1) if destination == "gateway" else destination
+
+        iperf_cmd = ["iperf", "--bind", bind_ip, "--enhanced", "--client", dest_ip]
+        if direction == "dl":
+            iperf_cmd.append("--reverse")
+        iperf_cmd.extend(args)
+
+        iperf_result = exec_in_deployment(
+            namespace=self.namespace,
+            deployment_name=element,
+            command=iperf_cmd,
+            timeout=exec_timeout,
+        )
+        return iperf_result
+
+    def test_connectivity(
+        self,
+        terminal_id: TermId,
+        destination: str = "gateway",
+        args: List[str] = [],
+    ) -> KubectlOperationResult:
+        """Test connectivity from the terminal by pinging the destination.
+
+        Parameters:
+            terminal_id (TermId): The name of the terminal (e.g. ``"ue02"``).
+            destination (str): Target IP address or ``"gateway"`` to auto-resolve
+                from the PDU-session subnet.
+            args (List[str]): Extra ping flags, e.g. ``["-c", "4", "-W", "2"]``.
+                Defaults to ``["-c", "3"]`` if ``"-c"`` is not provided.
+
+        Returns:
+            KubectlOperationResult: On success, ``data`` contains:
+
+            - ``output`` — raw ping output string
+            - ``connected`` — ``True`` if at least one packet was received, ``False`` otherwise
+
+        Examples:
+        ```python
+        from br_rapp_sdk import OAMServices
+
+        oam = OAMServices()
+        result = oam.terminal.test_connectivity("ue02")
+        if result.status == "success":
+            print("Connected:", result.data["connected"])
+            print(result.data["output"])
+        else:
+            print("Error:", result.error)
+        ```
+        """
+        try:
+            count = int(args[args.index("-c") + 1])
+        except (ValueError, IndexError):
+            count = 3
+            args = ["-c", "3"] + args
+        exec_timeout = count + 10
+
+        get_result = get_cr(
+            kube_api_instance=self._api,
+            group=self._group,
+            version=self._version,
+            plural=self._plural,
+            namespace=self.namespace,
+            name=terminal_id,
+        )
+        if get_result.status != 'success':
+            return get_result
+
+        raw = get_result.data.get('item', {})
+        element = raw.get('status', {}).get('element')
+        if not element:
+            return KubectlOperationResult(
+                status='error', operation='exec',
+                error=KubectlError(code=400, message=f"Terminal '{terminal_id}' has no element assigned. Is it connected?"),
+            )
+
+        interface = raw.get('spec', {}).get('readiness-check', {}).get('interface-name')
+        if not interface:
+            return KubectlOperationResult(
+                status='error', operation='exec',
+                error=KubectlError(code=400, message=f"Terminal '{terminal_id}' has no readiness-check interface-name configured."),
+            )
+
+        if destination == "gateway":
+            ip_result = exec_in_deployment(
+                namespace=self.namespace,
+                deployment_name=element,
+                command=["ip", "address", "show", interface],
+            )
+            if ip_result.status != 'success':
+                return ip_result
+
+            ip_match = re.search(r'inet (\d+\.\d+\.\d+\.\d+/\d+)', ip_result.data.get('output', ''))
+            if not ip_match:
+                return KubectlOperationResult(
+                    status='error', operation='exec',
+                    error=KubectlError(code=500, message=f"Could not find an IPv4 address on interface '{interface}'."),
+                )
+            dest_ip = str(ipaddress.IPv4Interface(ip_match.group(1)).network.network_address + 1)
+        else:
+            dest_ip = destination
+
+        ping_cmd = ["ping", "-I", interface] + args + [dest_ip]
+
+        ping_result = exec_in_deployment(
+            namespace=self.namespace,
+            deployment_name=element,
+            command=ping_cmd,
+            timeout=exec_timeout,
+        )
+        if ping_result.status == 'success':
+            output = ping_result.data.get('output', '')
+            loss_match = re.search(r'(\d+)% packet loss', output)
+            connected = loss_match is not None and int(loss_match.group(1)) < 100
+            ping_result.data.update({
+                'connected': connected,
+            })
+        return ping_result
 
     def delete_terminal(
         self,
