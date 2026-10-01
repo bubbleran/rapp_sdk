@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "br_rapp_sdk"
-version = "2026.2"
+version = "2026.6"
 authors = [
   { name="Andrea LEONE", email="andrea.leone@bubbleran.com" },
   { name="Ali YAGHOUBIAN", email="ali.yaghoubian@bubbleran.com" }
@@ -18,7 +18,7 @@ classifiers = [
 ]
 dependencies = [
   "httpx>=0.28.1",
-  "kubernetes>=32.0.1",
+  "kubernetes>=32.0.1,!=36.0.0",
   "mysql-connector-python>=8.1.0",
   "pydantic>=2.10.6",
   "pyyaml>=6.0.1",

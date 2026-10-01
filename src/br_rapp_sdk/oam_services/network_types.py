@@ -22,7 +22,7 @@ class SnakeModel(BaseModel):
     model_config = ConfigDict(validate_by_name=True)
 
     def yaml(self) -> str:
-        return yaml.dump(self.model_dump(), sort_keys=False)
+        return yaml.dump(self.model_dump(mode="json"), sort_keys=False)
 
     def load_yaml(self, yaml_str: str) -> None:
         data = yaml.safe_load(yaml_str)
@@ -48,9 +48,21 @@ NetworkPart = Literal["access", "core", "edge"]
 DeploymentType = Literal["quectel", "external", "l2-sim", "rf-sim", "backhaul"]
 Stack = Literal["4g-sa", "4g-nsa", "5g-sa", "5g-nsa", "4g-5g"]
 NetworkMode = Literal["IPv4", "IPv6", "IPv4v6", "Ethernet", "Unstructured"]
-ServiceType = Literal["eMBB", "URLLC", "mMTC", "MIoT"]
 ReadinessMethod = Literal["ping"]
 ReadinessTarget = Literal["gateway", "google-ip", "google-dns", "kubernetes"]
+AccessRadioDevice = Literal[
+    "uhd-b200",
+    "uhd-n300",
+    "uhd-n310",
+    "uhd-x300",
+    "uhd-x310",
+    "amr-sdr50",
+    "amr-sdr100",
+    "rf-sim",
+    "l2-sim",
+    "aw2s-rrh",
+    "oran-7.2",
+]
 
 
 # Identity and security placeholders
@@ -89,6 +101,12 @@ AuthenticationKey = str
 SequenceNumber = str
 LinuxInterfaceName = str
 SD = int
+SST = Annotated[int, Field(ge=1, le=255)]
+MIMO_LAYERS_REGEX = r"^[0-9]+[xX][0-9]+$"
+MIMOLayers = Annotated[
+    str,
+    StringConstraints(pattern=MIMO_LAYERS_REGEX),
+]
 
 AccessNetworkId = FullNameTag
 CoreNetworkId = FullNameTag
@@ -102,7 +120,7 @@ class SliceDesc(SnakeModel):
     plmn: The PLMN of the slice composed of the concatenation of the MNC and MCC in five digits.
     dnn: The DNN (Data Network Name) of the slice, equivalent to APN (Access Point Name) in the context of LTE.
     network_mode: The NetworkMode associated with this 3GPP E2E slice.
-    service_type: The ServiceType of the slice, which could be defined in the string format of the standard or the integer format. The valid string values are "eMBB", "URLLC", "MIoT", "V2X", "HMTC", and "HDLLC".
+    service_type: The integer Slice/Service Type (SST) of the slice.
     differentiator: The Differentiator ID of the slice.
 	        This value is preferred to be in hexadecimal format, but could be any numerical non-negative value.
 	        The value 0x000000 is reserved for the default slice and 0xFFFFFF for the no slice selection according to the 3GPP specifications.
@@ -112,8 +130,8 @@ class SliceDesc(SnakeModel):
     plmn: str
     dnn: NameTag
     network_mode: NetworkMode = Field(..., alias="network-mode")
-    service_type: ServiceType = Field(..., alias="service-type")
-    differentiator: Union[int, str]
+    service_type: SST = Field(..., alias="service-type")
+    differentiator: int
     ipv4_range: Optional[str] = Field(None, alias="ipv4-range")
     ipv6_range: Optional[str] = Field(None, alias="ipv6-range")
 
@@ -131,20 +149,6 @@ class SliceDesc(SnakeModel):
         normalized = mapping.get(v_str, None)
         if not normalized:
             raise ValueError(f"Invalid network-mode: {v_str}")
-        return normalized
-    
-    @field_validator("service_type", mode="before")
-    def normalize_service_type(cls, v):
-        mapping = {
-            "embb": "eMBB",
-            "urllc": "URLLC",
-            "mmtc": "mMTC",
-            "miot": "MIoT",
-        }
-        v_str = str(v).lower()
-        normalized = mapping.get(v_str, None)
-        if not normalized:
-            raise ValueError(f"Invalid service-type: {v_str}")
         return normalized
     
 #TODO: 
@@ -166,7 +170,7 @@ class SliceFilters(SnakeModel):
     ids: Optional[List[int]] = None
     plmn: Optional[List[str]] = None
     dnn: Optional[List[NameTag]] = None
-    service_type: Optional[List[str]] = Field(None, alias="service-type")
+    service_type: Optional[List[SST]] = Field(None, alias="service-type")
 
 
 class NetworkDesc(SnakeModel):
@@ -217,11 +221,32 @@ class TDDConfig(SnakeModel):
     ul_slots: SlotsUL is the number of uplink slots.
     ul_symbols: SymbolsSpecialUL is the number of symbols in uplink in the special slot
     """
-    period: str
+    period: int
     dl_slots: int = Field(..., alias="dl-slots")
     dl_symbols: int = Field(..., alias="dl-symbols")
     ul_slots: int = Field(..., alias="ul-slots")
     ul_symbols: int = Field(..., alias="ul-symbols")
+
+
+class TDDConfigEUTRA(SnakeModel):
+    """TDD configuration format for E-UTRA cells."""
+
+    pattern: Annotated[
+        str,
+        StringConstraints(pattern=r"^[DUS]+$", min_length=1, max_length=10),
+    ]
+    period: int
+
+
+CellGroupKind = Literal["ccg", "nsa", "hog", "dss"]
+
+
+class CellGroup(SnakeModel):
+    """Association group for carrier aggregation, NSA, handover, or DSS."""
+
+    kind: CellGroupKind
+    name: NameTag
+    main: Optional[bool] = None
 
 
 class Cell(SnakeModel):
@@ -253,9 +278,25 @@ class Cell(SnakeModel):
     band: str
     arfcn: int
     bandwidth: str
-    subcarrier_spacing: str = Field(..., alias="subcarrier-spacing")
+    subcarrier_spacing: Optional[str] = Field(None, alias="subcarrier-spacing")
+    filters: Optional[SliceFilters] = None
+    groups: Optional[List[CellGroup]] = None
+    offset: Optional[str] = None
     tdd_config: Optional[TDDConfig] = Field(None, alias="tdd-config")
+    tdd_config_eutra: Optional[TDDConfigEUTRA] = Field(None, alias="tdd-config-eutra")
 
+class Antenna(SnakeModel):
+    """
+    Antenna structure is a grouping for antenna-related parameters of the AN.
+    
+    Attributes:
+        rx_gain: RxGain is the gain of the antenna in dB.
+        tx_gain: TxGain is the gain of the antenna in dB.
+        formation: Formation determines the MIMO mode in "TxR" format (for example "1x1", "2x2").
+    """
+    rx_gain: Optional[str] = Field(None, alias="rx-gain")
+    tx_gain: Optional[str] = Field(None, alias="tx-gain")
+    formation: Optional[MIMOLayers] = "1x1"
 
 class AccessRadio(SnakeModel):
     """
@@ -267,9 +308,11 @@ class AccessRadio(SnakeModel):
 	            simulator mode.
 	            The support for Amarisoft UHD N310, UHD X300, UHD X310, L2-SIM, O-RAN 7.2 are defined for forward compatibility,
 	            but are not yet verified officially yet.
-        Antenna: Not implemented yet.
+        Antenna: Antenna determines the features of the antenna that is used to transmit and receive the signals. 
+                The antenna is a scalar and applies to all the cells of this AN instance.
     """
-    device: str
+    device: AccessRadioDevice
+    antenna: Optional[Antenna] = None
 
 
 class AccessIdentity(SnakeModel):
@@ -329,6 +372,7 @@ class AccessNetworkSpec(NetworkDesc):
     """
     radio: AccessRadio
     identity: Optional[AccessIdentity] = None
+    interfaces: Optional[Dict[str, str]] = None
     cells: List[Cell]
     core_networks: List[FullNameTag] = Field(..., alias="core-networks")
     controller: Optional[FullNameTag] = None
@@ -367,9 +411,10 @@ class CoreIdentity(SnakeModel):
 	       Equivalent to the least-valued 6 bits of the MME Code in 4G.
 	       If the CoreNetworkID is not provided, the Operator will generate a random ID within the range.
     """
-    region: Optional[int]
+    region: Optional[int] = None
     cn_group: Optional[int] = Field(None, alias="cn-group")
     cn_id: Optional[int] = Field(None, alias="cn-id")
+    tracking_area: Optional[int] = Field(None, alias="tracking-area")
 
 
 class CoreNetworkSpec(NetworkDesc):
@@ -382,10 +427,15 @@ class CoreNetworkSpec(NetworkDesc):
         Controller: Optional string representing the name of the controller managing this CN. If not provided, then the CN is not associated with any controller.
     """
     identity: Optional[CoreIdentity] = None
+    interfaces: Optional[Dict[str, str]] = None
     controller: Optional[FullNameTag] = None
 
 
 # Edge
+class EdgeIdentity(SnakeModel):
+    en_id: Optional[int] = Field(None, alias="en-id")
+
+
 class EdgeNetworkSpec(NetworkDesc):
     """
     EdgeNetwork defines an Edge Network (EN) to be used for deployment.
@@ -393,7 +443,7 @@ class EdgeNetworkSpec(NetworkDesc):
     Attributes:
         NetworkDesc fields: name, stack, model, scopes, profiles, scheduling, labels, annotations, filters, post_configuration
     """
-    pass
+    identity: Optional[EdgeIdentity] = None
 
 
 # DNS
@@ -410,6 +460,11 @@ class DNSRecord(SnakeModel):
     secondary: Optional[str] = None
 
 
+class ExtraDNSRecord(SnakeModel):
+    name: str
+    ip: Optional[str] = None
+
+
 class DNSList(SnakeModel):
     """
     DNSList defines IPv4 and IPv6 DNS records.
@@ -420,6 +475,7 @@ class DNSList(SnakeModel):
     """
     ipv4: Optional[DNSRecord] = None
     ipv6: Optional[DNSRecord] = None
+    extra: Optional[List[ExtraDNSRecord]] = None
 
 
 # Full Spec
@@ -440,4 +496,3 @@ class NetworkSpec(SnakeModel):
     core: Optional[List[CoreNetworkSpec]] = None
     edge: Optional[List[EdgeNetworkSpec]] = None
     dns: Optional[DNSList] = None
-

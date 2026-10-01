@@ -2,11 +2,10 @@
 Refer to the API reference in the Developer Guide of BubbleRAN Open Documentation
 for detailed information about these types.
 """
-from typing import Optional, List, Dict, Any, Literal
+from typing import Optional, List, Dict, Any, Literal, Union
 from pydantic import Field, IPvAnyAddress, field_validator
 from .network_types import (
     AuthenticationKey,
-    Cell,
     FullModelName,
     FullNameTag,
     IMSI,
@@ -17,19 +16,26 @@ from .network_types import (
     Scheduling,
     SequenceNumber,
     SnakeModel,
+    SST,
 )
 
 DeploymentType = Literal["quectel", "external", "l2-sim", "rf-sim", "backhaul"]
 Stack = Literal["4g-sa", "4g-nsa", "5g-sa", "5g-nsa", "4g-5g"]
 NetworkMode = Literal["IPv4", "IPv6", "IPv4v6", "Ethernet", "Unstructured"]
-SST = Literal["eMBB", "URLLC", "mMTC"]
 ReadinessMethod = Literal["ping"]
 ReadinessTarget = Literal["gateway", "google-ip", "google-dns", "kubernetes"]
 
 
+class ResDevice(SnakeModel):
+    name: str
+    units: Union[int, str]
+
+
 class ContainerDefinition(SnakeModel):
-    # Define your container structure here
     image: str
+    command: Optional[List[str]] = None
+    devices: Optional[List[ResDevice]] = None
+    env: Optional[Dict[str, str]] = None
 
 TermId = NameTag
     
@@ -71,19 +77,6 @@ class TermSlice(SnakeModel):
             raise ValueError(f"Invalid network-mode: {v_str}")
         return normalized
     
-    @field_validator("service_type", mode="before")
-    def normalize_service_type(cls, v):
-        mapping = {
-            "embb": "eMBB",
-            "urllc": "uRLLC",
-            "mmtc": "mMTC",
-        }
-        v_str = str(v).lower()
-        normalized = mapping.get(v_str, None)
-        if not normalized:
-            raise ValueError(f"Invalid service-type: {v_str}")
-        return normalized
-
 
 class TermIMS(SnakeModel):
     tel: str
@@ -91,8 +84,6 @@ class TermIMS(SnakeModel):
 
 class TermRadio(SnakeModel):
     bands: List[str]
-    access: Optional[FullNameTag] = None
-    cells: Optional[List[Cell]] = None
 
 
 class ReadinessCheck(SnakeModel):
