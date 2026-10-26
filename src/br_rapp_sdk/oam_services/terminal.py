@@ -17,7 +17,7 @@ from .common import (
     ATHENA_TERMINAL_KIND,
     ATHENA_TERMINAL_PLURAL,
 )
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 from .terminal_types import *
 
 class OAMTerminalService:
@@ -205,7 +205,73 @@ class OAMTerminalService:
             terminal_id = TermId(terminal_name)
             apply_result.data = { 'terminal_id': terminal_id }
         return apply_result
-        
+
+    def _resolve_ue_interface(
+        self,
+        raw: dict,
+        terminal_id: TermId,
+        ue_index: Optional[int],
+    ) -> Tuple[Optional[str], Optional[KubectlOperationResult]]:
+        """Find the tunnel interface of a UE of the terminal.
+
+        Without ue_index, the readiness-check interface-name is used, falling back to the interface of the first UE
+        reported in the terminal status. With ue_index, the interface reported for that UE is used.
+        """
+        ues = raw.get('status', {}).get('ues') or []
+        if ue_index is None:
+            interface = (raw.get('spec', {}).get('readiness-check') or {}).get('interface-name')
+            if interface:
+                return interface, None
+            ue = min(ues, key=lambda u: u.get('index', 0), default=None)
+            if ue is None or not ue.get('interface'):
+                return None, KubectlOperationResult(
+                    status='error', operation='exec',
+                    error=KubectlError(code=400, message=f"Terminal '{terminal_id}' has no readiness-check interface-name and reports no UE interface. Is it registered?"),
+                )
+            return ue['interface'], None
+
+        ue = next((u for u in ues if u.get('index') == ue_index), None)
+        if ue is None or not ue.get('interface'):
+            return None, KubectlOperationResult(
+                status='error', operation='exec',
+                error=KubectlError(code=400, message=f"Terminal '{terminal_id}' reports no interface for UE {ue_index}. Is it registered?"),
+            )
+        return ue['interface'], None
+
+    def _resolve_gateway(
+        self,
+        element: str,
+        interface: str,
+    ) -> Tuple[Optional[str], Optional[KubectlOperationResult]]:
+        """Find the gateway of a UE tunnel interface from the routing table of the terminal.
+        """
+        route_result = exec_in_deployment(
+            namespace=self.namespace,
+            deployment_name=element,
+            command=["ip", "route", "show"],
+        )
+        if route_result.status != 'success':
+            return None, route_result
+
+        for line in route_result.data.get('output', '').splitlines():
+            fields = line.split()
+            if "dev" not in fields or fields.index("dev") + 1 >= len(fields) or fields[fields.index("dev") + 1] != interface:
+                continue
+            if "via" in fields and fields.index("via") + 1 < len(fields):
+                return fields[fields.index("via") + 1], None
+            try:
+                network = ipaddress.ip_network(fields[0], strict=False)
+            except ValueError:
+                continue
+            if network.num_addresses == 1:
+                return str(network.network_address), None
+            return str(network.network_address + 1), None
+
+        return None, KubectlOperationResult(
+            status='error', operation='exec',
+            error=KubectlError(code=500, message=f"Could not find a gateway route through interface '{interface}'. Pass the destination explicitly."),
+        )
+
 
     def test_throughput(
         self,
@@ -213,6 +279,7 @@ class OAMTerminalService:
         direction: Literal["dl", "ul"] = "dl",
         destination: str = "gateway",
         args: List[str] = [],
+        ue_index: Optional[int] = None,
     ) -> KubectlOperationResult:
         """Run an iperf throughput test from the terminal.
 
@@ -221,9 +288,11 @@ class OAMTerminalService:
             direction (Literal["dl", "ul"]): ``"dl"`` adds ``--reverse`` so the server
                 sends toward the UE; ``"ul"`` sends from the UE toward the server.
             destination (str): Target IP address or ``"gateway"`` to resolve the
-                gateway automatically as the first host of the PDU-session subnet.
+                gateway automatically from the route of the UE interface.
             args (List[str]): Extra iperf flags appended after ``--client <ip>``,
                 e.g. ``["--time", "30", "--interval", "1", "--bandwidth", "10M"]``.
+            ue_index (Optional[int]): For a multi-UE terminal, the 0-based index of the UE to test from.
+                Defaults to the readiness-check interface.
 
         Returns:
             KubectlOperationResult: On success, ``data`` contains:
@@ -245,7 +314,7 @@ class OAMTerminalService:
         try:
             t_idx = next(i for i, a in enumerate(args) if a in ("-t", "--time"))
             exec_timeout = int(args[t_idx + 1]) + 30
-        except (StopIteration, (IndexError, ValueError)):
+        except (StopIteration, IndexError, ValueError):
             exec_timeout = 90
 
         get_result = get_cr(
@@ -267,12 +336,9 @@ class OAMTerminalService:
                 error=KubectlError(code=400, message=f"Terminal '{terminal_id}' has no element assigned. Is it connected?"),
             )
 
-        interface = raw.get('spec', {}).get('readiness-check', {}).get('interface-name')
-        if not interface:
-            return KubectlOperationResult(
-                status='error', operation='exec',
-                error=KubectlError(code=400, message=f"Terminal '{terminal_id}' has no readiness-check interface-name configured."),
-            )
+        interface, error_result = self._resolve_ue_interface(raw, terminal_id, ue_index)
+        if error_result:
+            return error_result
 
         ip_result = exec_in_deployment(
             namespace=self.namespace,
@@ -289,9 +355,13 @@ class OAMTerminalService:
                 error=KubectlError(code=500, message=f"Could not find an IPv4 address on interface '{interface}'."),
             )
 
-        iface_addr = ipaddress.IPv4Interface(ip_match.group(1))
-        bind_ip = str(iface_addr.ip)
-        dest_ip = str(iface_addr.network.network_address + 1) if destination == "gateway" else destination
+        bind_ip = str(ipaddress.IPv4Interface(ip_match.group(1)).ip)
+        if destination == "gateway":
+            dest_ip, error_result = self._resolve_gateway(element, interface)
+            if error_result:
+                return error_result
+        else:
+            dest_ip = destination
 
         iperf_cmd = ["iperf", "--bind", bind_ip, "--enhanced", "--client", dest_ip]
         if direction == "dl":
@@ -311,15 +381,18 @@ class OAMTerminalService:
         terminal_id: TermId,
         destination: str = "gateway",
         args: List[str] = [],
+        ue_index: Optional[int] = None,
     ) -> KubectlOperationResult:
         """Test connectivity from the terminal by pinging the destination.
 
         Parameters:
             terminal_id (TermId): The name of the terminal (e.g. ``"ue02"``).
             destination (str): Target IP address or ``"gateway"`` to auto-resolve
-                from the PDU-session subnet.
+                from the route of the UE interface.
             args (List[str]): Extra ping flags, e.g. ``["-c", "4", "-W", "2"]``.
                 Defaults to ``["-c", "3"]`` if ``"-c"`` is not provided.
+            ue_index (Optional[int]): For a multi-UE terminal, the 0-based index of the UE to test from.
+                Defaults to the readiness-check interface.
 
         Returns:
             KubectlOperationResult: On success, ``data`` contains:
@@ -366,29 +439,14 @@ class OAMTerminalService:
                 error=KubectlError(code=400, message=f"Terminal '{terminal_id}' has no element assigned. Is it connected?"),
             )
 
-        interface = raw.get('spec', {}).get('readiness-check', {}).get('interface-name')
-        if not interface:
-            return KubectlOperationResult(
-                status='error', operation='exec',
-                error=KubectlError(code=400, message=f"Terminal '{terminal_id}' has no readiness-check interface-name configured."),
-            )
+        interface, error_result = self._resolve_ue_interface(raw, terminal_id, ue_index)
+        if error_result:
+            return error_result
 
         if destination == "gateway":
-            ip_result = exec_in_deployment(
-                namespace=self.namespace,
-                deployment_name=element,
-                command=["ip", "address", "show", interface],
-            )
-            if ip_result.status != 'success':
-                return ip_result
-
-            ip_match = re.search(r'inet (\d+\.\d+\.\d+\.\d+/\d+)', ip_result.data.get('output', ''))
-            if not ip_match:
-                return KubectlOperationResult(
-                    status='error', operation='exec',
-                    error=KubectlError(code=500, message=f"Could not find an IPv4 address on interface '{interface}'."),
-                )
-            dest_ip = str(ipaddress.IPv4Interface(ip_match.group(1)).network.network_address + 1)
+            dest_ip, error_result = self._resolve_gateway(element, interface)
+            if error_result:
+                return error_result
         else:
             dest_ip = destination
 

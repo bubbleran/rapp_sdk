@@ -58,6 +58,8 @@ AccessRadioDevice = Literal[
     "uhd-x310",
     "amr-sdr50",
     "amr-sdr100",
+    "zmq",
+    "trx-ip",
     "rf-sim",
     "l2-sim",
     "aw2s-rrh",
@@ -65,8 +67,7 @@ AccessRadioDevice = Literal[
 ]
 
 
-# Identity and security placeholders
-#TODO: add more specific types for these fields
+# Identity and security types, mirroring the validation of Athena insignia
 NameTag = Annotated[
     str,
     StringConstraints(
@@ -95,12 +96,13 @@ FullModelName = Annotated[
 ]
 
 NetworkId = NameTag
-IMSI = str
-OperatorParameterConcealed = str
-AuthenticationKey = str
-SequenceNumber = str
-LinuxInterfaceName = str
-SD = int
+PLMN = Annotated[str, StringConstraints(pattern=r'^[0-9]{5,6}$')]
+IMSI = Annotated[str, StringConstraints(pattern=r'^[0-9]{15}$')]
+OperatorParameterConcealed = Annotated[str, StringConstraints(pattern=r'^0x[0-9a-fA-F]{32}$')]
+AuthenticationKey = Annotated[str, StringConstraints(pattern=r'^0x[0-9a-fA-F]{32,64}$')]
+SequenceNumber = Annotated[str, StringConstraints(pattern=r'^0x[0-9a-fA-F]{12}$')]
+LinuxInterfaceName = Annotated[str, StringConstraints(pattern=r'^[a-z]([-_a-z0-9]{0,13}[a-z0-9])$')]
+SD = Annotated[int, Field(ge=0, le=0xFFFFFF)]
 SST = Annotated[int, Field(ge=1, le=255)]
 MIMO_LAYERS_REGEX = r"^[0-9]+[xX][0-9]+$"
 MIMOLayers = Annotated[
@@ -127,11 +129,11 @@ class SliceDesc(SnakeModel):
     ipv4_range: The IPv4Range of addresses for this 3GPP E2E slice. If the NetworkMode is IPv4 or IPv4v6, this field is mandatory.
     ipv6_range: The IPv6Range of addresses for this 3GPP E2E slice. If the NetworkMode is IPv6 or IPv4v6, this field is mandatory.
     """
-    plmn: str
+    plmn: PLMN
     dnn: NameTag
     network_mode: NetworkMode = Field(..., alias="network-mode")
     service_type: SST = Field(..., alias="service-type")
-    differentiator: int
+    differentiator: SD
     ipv4_range: Optional[str] = Field(None, alias="ipv4-range")
     ipv6_range: Optional[str] = Field(None, alias="ipv6-range")
 
@@ -151,10 +153,28 @@ class SliceDesc(SnakeModel):
             raise ValueError(f"Invalid network-mode: {v_str}")
         return normalized
     
-#TODO: 
 class Scheduling(SnakeModel):
-    # Define actual structure if needed
-    pass
+    """
+    Scheduling Constraints for the pods, based on Kubernetes logic.
+
+    Attributes:
+    node_selector: Selector which must be true for the pod to fit on a node.
+    affinity: Kubernetes Affinity for the pods, kept as a raw Kubernetes object.
+    node_name: Request to schedule the pods onto a specific node.
+    scheduler_name: Name of the scheduler to use.
+    tolerations: Kubernetes Tolerations for the pods, kept as raw Kubernetes objects.
+    priority_class: Name of the priority class to be used by the pods.
+    priority: Priority value of the pods.
+    preemption_policy: Policy for preempting pods with lower priority.
+    """
+    node_selector: Optional[Dict[str, str]] = Field(None, alias="nodeSelector")
+    affinity: Optional[Dict[str, Any]] = None
+    node_name: Optional[str] = Field(None, alias="nodeName")
+    scheduler_name: Optional[str] = Field(None, alias="schedulerName")
+    tolerations: Optional[List[Dict[str, Any]]] = None
+    priority_class: Optional[str] = Field(None, alias="priorityClass")
+    priority: Optional[int] = None
+    preemption_policy: Optional[Literal["PreemptLowerPriority", "Never"]] = Field(None, alias="preemptionPolicy")
 
 #TODO: NOT TESTED
 class SliceFilters(SnakeModel):
@@ -168,7 +188,7 @@ class SliceFilters(SnakeModel):
     service_type: SST filtering for the slices.
     """
     ids: Optional[List[int]] = None
-    plmn: Optional[List[str]] = None
+    plmn: Optional[List[PLMN]] = None
     dnn: Optional[List[NameTag]] = None
     service_type: Optional[List[SST]] = Field(None, alias="service-type")
 
@@ -373,8 +393,8 @@ class AccessNetworkSpec(NetworkDesc):
     radio: AccessRadio
     identity: Optional[AccessIdentity] = None
     interfaces: Optional[Dict[str, str]] = None
-    cells: List[Cell]
-    core_networks: List[FullNameTag] = Field(..., alias="core-networks")
+    cells: List[Cell] = Field(default_factory=list)
+    core_networks: List[FullNameTag] = Field(default_factory=list, alias="core-networks")
     controller: Optional[FullNameTag] = None
 
 

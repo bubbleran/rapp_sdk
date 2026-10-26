@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "br_rapp_sdk"
-version = "2026.6"
+version = "2026.10"
 authors = [
   { name="Andrea LEONE", email="andrea.leone@bubbleran.com" },
   { name="Ali YAGHOUBIAN", email="ali.yaghoubian@bubbleran.com" }
